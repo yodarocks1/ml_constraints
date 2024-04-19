@@ -1,4 +1,4 @@
-from constraints import Constraint, Constraints
+from .constraints import Constraint, Constraints
 
 __all__ = [
     "Constraint",
