@@ -206,7 +206,7 @@ class Constraints:
     @classmethod
     def from_label(cls, label):
         c = cls()
-        c.add(Constraint(label, "max"))
+        c.add(Constraint((label, ), "max"))
         return c
 
 
