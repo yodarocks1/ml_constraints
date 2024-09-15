@@ -11,11 +11,6 @@ class Constraint:
         """Creation of a Constraint will be delegated to a subclass"""
         if cls is Constraint:
             if constraint in ComparisonConstraint.VALID_CONSTRAINTS:
-                try:
-                    if len(labels) == 1:
-                        labels = labels[0]
-                except TypeError:
-                    pass
                 return super(Constraint, cls).__new__(ComparisonConstraint, labels, constraint, *args, **kwargs)
             elif constraint in MaxConstraint.VALID_CONSTRAINTS:
                 return super(Constraint, cls).__new__(ComparisonConstraint, labels, constraint, *args, **kwargs)
@@ -123,13 +118,12 @@ class ComparisonConstraint(Constraint):
         elif other is None or type(other) is not str:
             raise ValueError(f"Comparison constraints (like `{constraint}`) require a label or value on the right")
         elif type(label) is not str:
-            try:
-                if len(label) == 1:
-                    label = label[0]
+            if len(label) != 1:
+                raise TypeError(f"Expected an iterable of length 1, got {type(label).__name__} of length {len(label)}")
+            else:
+                label = label[0]
                 if type(label) is not str:
-                    raise TypeError()
-            except:
-                raise ValueError(f"Comparison constraints (like `{constraint}`) can only take one label on the left")
+                    raise TypeError(f"iterable[0]: Expected a str, got {type(label).__name__}")
 
         self.label = self.get_label(label)
         self.constraint = constraint
