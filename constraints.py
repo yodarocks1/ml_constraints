@@ -1,111 +1,64 @@
+from typing import Tuple, Literal, NewType
 import numpy as np
 
-class Constraint:
-    """
-       ------------------------------------------------------------------------
-    Class Attributes:
-      INVERT_MAP  Running INVERT_MAP[constraint] inverts the constraint
-      F           Calling F[constraint](a, b) runs the constraint as a function
-                        (Only valid for Comparison Constraints)
-        
-    Object Attribute Types:
-      constraint  *ComparisonConstraint*  or  *MaxConstraint*
-      labels       Index                  or   list<Index> (length >= 1)
-      other        Index or Constant      or   `None`
-      other_const  boolean                or   `False`
-      repr         string
-      vnnlib       boolean
+Label = NewType(int)
+Constant = NewType(float)
 
-    Types used:
-      Index: int
-      Constant: string
-        format: type<float> + "f"
-      ComparisonContraint: string
-        one of: '>', '>=', '<', '<='
-      MaxConstraint: string
-        one of: 'max', 'min', 'notmax', 'notmin'
+class Constraint:
+    VALID_CONSTRAINTS = () # Initialized later
     
-    Valid constraints:
-      >        implies   LABEL_1 >  OTHER
-      >=       implies   LABEL_1 >= OTHER
-      <        implies   LABEL_1 <  OTHER
-      <=       implies   LABEL_1 <= OTHER
-      max      implies   max(LABELS) in [LABEL_1, LABEL_2, LABEL_3]
-      min      implies   min(LABELS) in [LABEL_1, LABEL_2, LABEL_3]
-      notmax   implies   max(LABELS) not in [LABEL_1, LABEL_2, LABEL_3]
-      notmin   implies   min(LABELS) not in [LABEL_1, LABEL_2, LABEL_3]
-    """
-    
-    INVERT_MAP = {
-        "min": "notmin",
-        "max": "notmax",
-        "notmin": "min",
-        "notmax": "max",
-        ">": "<=",
-        "<": ">=",
-        ">=": "<",
-        "<=": ">"
-    }
-    """Map of constraint values to their inverted form."""
-    
-    F = {
-        ">": lambda a, b: a > b,
-        "<": lambda a, b: a < b,
-        ">=": lambda a, b: a >= b,
-        "<=": lambda a, b: a <= b,
-    }
-    """Returns the constraint value as an anonymous function.
-        (Only valid for comparison functions: >, <, >=, <=)
-    """
+    def __new__(cls, labels, constraint, *args, **kwargs):
+        """Creation of a Constraint will be delegated to a subclass"""
+        if cls is Constraint:
+            if constraint in ComparisonConstraint.VALID_CONSTRAINTS:
+                try:
+                    if len(labels) == 1:
+                        labels = labels[0]
+                except TypeError:
+                    pass
+                return super(Constraint, cls).__new__(ComparisonConstraint, labels, constraint, *args, **kwargs)
+            elif constraint in MaxConstraint.VALID_CONSTRAINTS:
+                return super(Constraint, cls).__new__(ComparisonConstraint, labels, constraint, *args, **kwargs)
+            else:
+                raise ValueError(f"Bad constraint `{constraint}`")
+        else:
+            return super(Constraint, cls).__new__(cls, labels, constraint, *args, **kwargs)
 
     def __invert__(self) -> Constraint:
+        """Inverts the constraint.
+        Calls to `inverted.percent_true(...)` will always return `1 - self.percent_true(...)`
+        Calls to `inverted.exact_true(...)` will always return `not self.exact_true(...)`
+        """
         raise NotImplementedError(f"Constraint type {type(self)} did not implement __invert__(self) -> Constraint")
     
     def __repr__(self) -> str:
+        """Returns the constraint in proper constraints-file format.
+        All labels are represented by yN, where N is their index.
+        All constants are represented by Nf, where N is any float value.
+        """
         raise NotImplementedError(f"Constraint type {type(self)} did not implement __repr__(self) -> str")
 
     def percent_true(self, lower_bound, upper_bound) -> float:
+        """Returns the percentage of values between lower_bound and upper_bound that follow the constraint."""
         raise NotImplementedError(f"Constraint type {type(self)} did not implement percent_true(self, lower_bound, upper_bound) -> float")
         
     def exact_true(self, values) -> bool:
+        """Returns whether the values given follow the constraint."""
         raise NotImplementedError(f"Constraint type {type(self)} did not implement exact_true(self, values) -> bool")
         
     def is_vnnlib(self, coerce=False) -> bool:
+        """Returns whether the constraint is immediately representable in VNNLIB format."""
         raise NotImplementedError(f"Constraint type {type(self)} did not implement is_vnnlib(self, coerce=False) -> bool")
 
     def force_vnnlib(self) -> Constraint:
-        raise NotImplementedError(f"Constraint type {type(self)} did not implement force_vnnlib(self) -> Constraint")
-    
-    def __new__(self, labels, constraint, other=None):
-        pass
-    
-    def is_vnnlib(self, force=False):
-        """Returns whether the constraint is immediately representable in VNNLIB format.
-        
-        Keyword arguments:
-        force   Allow coercion. (default false)
-                    TODO: define 'coercion'
-        """
-        if self.constraint == ">=" and not force:
-            return False
-        if self.other is not None:
-            if self.constraint == "<=" and type(self.other) is not float:
-                return False
-            if self.constraint != "<=" and type(self.other) is float:
-                return False
-        return True
+        """Return this constraint in VNNLIB format.
+        *WARNING - This may change equality inclusion (e.g. >= to >, or < to <=)!
 
-    def force_vnnlib(self):
-        """Return this constraint in VNNLIB format
-        Errors:
-        ValueError  Constraint could not be coerced into VNNLIB format.
-                        See is_vnnlib() with force=true for further information
+        Exceptions:
+          ValueError  Constraint could not be coerced into VNNLIB format.
+                        See is_vnnlib() with coerce=true for further information
         """
-        if self.is_vnnlib():
-            return self
-        elif not self.is_vnnlib(force=True):
-            raise ValueError(f"Cannot convert constraint `{self.repr}` to vnnlib format")
-        return Constraint(self.labels, self.constraint.replace("=", ""), other=self.other)
+        raise NotImplementedError(f"Constraint type {type(self)} did not implement force_vnnlib(self) -> Constraint")
 
     def __call__(self, values_or_lower_bound, upper_bound=None, min_percent=None):
         if upper_bound is None:
@@ -121,6 +74,34 @@ class Constraint:
             if min_percent is None:
                 return percent
             return percent >= min_percent
+
+    def get_label(self, v) -> Label:
+        if type(v) is Label:
+            return v
+        elif not v.startswith("y"):
+            raise ValueError(f"Invalid label index {v}; label indices must start with 'y' (e.g. y4)")
+        try:
+            return Label(v[1:])
+        except ValueError:
+            raise ValueError(f"Invalid label index {v}")
+            
+    def get_constant(self, v) -> Constant:
+        if type(v) is Constant:
+            return v
+        elif not v.endswith("f"):
+            raise ValueError(f"Invalid constant {v}; constants must end with 'f' (e.g. 8f or -2.24e8f)")
+        try:
+            return Constant(v[:-1])
+        except ValueError:
+            raise ValueError(f"Invalid label index {v}")
+            
+    def get_label_or_constant(self, v) -> Label | Constant:
+        if v.startswith("y") or type(v) is Label:
+            return self.get_label(v)
+        elif v.endswith("f") or type(v) is Constant:
+            return self.get_constant(v)
+        else:
+            raise ValueError(f"Invalid constant or label index {v}; constants must end with 'f' (e.g. 8f or -2.24e8f); label indices must start with 'y' (e.g. y4)")
 
 class ComparisonConstraint(Constraint):
     VALID_CONSTRAINTS = ('>', '>=', '<', '<=')
@@ -139,29 +120,33 @@ class ComparisonConstraint(Constraint):
     def __init__(self, label, constraint, other):
         if constraint not in ComparisonConstraint.VALID_CONSTRAINTS:
             raise ValueError(f"Bad constraint `{constraint}`")
-        elif other is None:
+        elif other is None or type(other) is not str:
             raise ValueError(f"Comparison constraints (like `{constraint}`) require a label or value on the right")
-
-        try:
-            self.label = int(label)
-        except ValueError:
-            raise ValueError(f"Invalid label index {label}")
-            
-        if other.endswith("f"):
+        elif type(label) is not str:
             try:
-                self.other = float(other[:-1])
-                self.other_const = True
-            except ValueError:
-                raise ValueError(f"Invalid constant value {other[:-1]}; constant values are indicated by terminating with 'f' (e.g. 4f)")
-        elif not other.isdigit():
-            raise ValueError(f"Invalid label index {other}; constant values are indicated by terminating with 'f' (e.g. y2 > 4f)")
-        else
-            self.other = int(other)
-            self.other_const = False
+                if len(label) == 1:
+                    label = label[0]
+                if type(label) is not str:
+                    raise TypeError()
+            except:
+                raise ValueError(f"Comparison constraints (like `{constraint}`) can only take one label on the left")
+
+        self.label = self.get_label(label)
+        self.constraint = constraint
+        self.other = self.get_label_or_constant(other)
+
+        self.other_const = type(other) is Constant
 
         self.vnnlib = (self.other_const and constraint == ">=") or (not self.other_const and constraint in [">", "<"])
 
     def __invert__(self) -> Constraint:
+        """Inverts the constraint.
+        Calls to `inverted.percent_true(...)` will always return `1 - self.percent_true(...)`
+        Calls to `inverted.exact_true(...)` will always return `not self.exact_true(...)`
+
+        This is done by returning a ComparisonConstraint that is the proper inverse of this one.
+          E.g. `x > y` => `x <= y`
+        """
         inverted_constraint = ComparisonConstraint.INVERT_MAP[self.constraint]
         if self.other_const:
             return ComparisonConstraint(self.label, inverted_constraint, self.other + "f")
@@ -169,12 +154,17 @@ class ComparisonConstraint(Constraint):
             return ComparisonConstraint(self.label, inverted_constraint, self.other)
     
     def __repr__(self) -> str:
+        """Returns the constraint in proper constraints-file format.
+        All labels are represented by yN, where N is their index.
+        All constants are represented by Nf, where N is any float value.
+        """
         if self.other_const:
             return f"y{self.label} {constraint} {self.other}f"
         else:
             return f"y{self.label} {constraint} y{self.other}"
 
     def percent_true(self, lower_bound, upper_bound) -> float:
+        """Returns the percentage of values between lower_bound and upper_bound that follow the constraint."""
         v1_low = lower_bound[self.labels[0]]
         v1_high = upper_bound[self.labels[0]]
         if not self.other_const:
@@ -203,6 +193,7 @@ class ComparisonConstraint(Constraint):
             return 0.0
             
     def exact_true(self, values) -> bool:
+        """Returns whether the values given follow the constraint."""
         v1 = values[self.labels[0]]
         v2 = self.other if self.other_const else values[self.other]
         return ComparisonConstraint.F[self.constraint](v1, v2)
@@ -238,10 +229,10 @@ class ComparisonConstraint(Constraint):
             return True                                      # Const; <=
 
     def force_vnnlib(self) -> Constraint:
-        """Return this constraint in VNNLIB format
+        """Return this constraint in VNNLIB format.
         *WARNING - This may change equality inclusion (e.g. >= to >, or < to <=)!
         
-        Errors:
+        Exceptions:
           ValueError  Constraint could not be coerced into VNNLIB format.
                         See is_vnnlib() with coerce=true for further information
         """
@@ -286,31 +277,29 @@ class MaxConstraint(Constraint):
 
         self.labels = []
         for label in labels:
-            try:
-                self.labels.append(int(label))
-            except ValueError:
-                raise ValueError(f"Invalid label index {label}")
+            self.labels.append(self.get_label(label))
 
     def __invert__(self) -> Constraint:
+        """Inverts the constraint.
+        Calls to `inverted.percent_true(...)` will always return `1 - self.percent_true(...)`
+        Calls to `inverted.exact_true(...)` will always return `not self.exact_true(...)`
+
+        This is done by returning a ComparisonConstraint that is the proper inverse of this one.
+          E.g. `y2 y4 min` => `y2 y4 notmin`
+        """
         return MaxConstraint(self.labels, MaxConstraint.INVERT_MAP[self.constraint])
     
     def __repr__(self) -> str:
+        """Returns the constraint in proper constraints-file format.
+        All labels are represented by yN, where N is their index.
+        All constants are represented by Nf, where N is any float value.
+        """
         return " ".join(map(lambda label: f"y {label}", self.labels)) + " " + self.constraint
 
     def percent_true(self, lower_bound, upper_bound) -> float:
-        # TODO: Check against what the internet says @ https://stackoverflow.com/questions/78332169
-        chosen = self.labels
-        unchosen = list(filter(lambda x: x not in chosen, range(len(lower_bound))))
-
-        f = max if "max" in self.constraint else min
-
-        chosen_low = f(map(lambda x: lower_bound[x], chosen))
-        chosen_high = f(map(lambda x: upper_bound[x], chosen))
-        unchosen_low = f(map(lambda x: lower_bound[x], unchosen))
-        unchosen_high = f(map(lambda x: upper_bound[x], unchosen))
-
-        # SIMPLIFIES TO:
-
+        """Returns the percentage of values between lower_bound and upper_bound that follow the constraint.
+        c = chosen low   | C = chosen high
+        u = unchosen low | U = unchosen high
         ########################             ########################
         #           ╱C=U       #             #           ╱C=U       #
         # C        ╱           #             # C        ╱           #
@@ -324,7 +313,19 @@ class MaxConstraint(Constraint):
         #  ╱                   #             #  ╱                   #
         # ╱  u         U       #             # ╱  u         U       #
         ########################             ########################
-        
+        """
+        # TODO: Check against what the internet says @ https://stackoverflow.com/questions/78332169
+        chosen = self.labels
+        unchosen = list(filter(lambda x: x not in chosen, range(len(lower_bound))))
+
+        f = max if "max" in self.constraint else min
+
+        chosen_low = f(map(lambda x: lower_bound[x], chosen))
+        chosen_high = f(map(lambda x: upper_bound[x], chosen))
+        unchosen_low = f(map(lambda x: lower_bound[x], unchosen))
+        unchosen_high = f(map(lambda x: upper_bound[x], unchosen))
+
+        # See docstring:
         c, C = chosen_low, chosen_high
         u, U = unchosen_low, unchosen_high
         total_area = (C-c)*(U-u)
@@ -347,13 +348,23 @@ class MaxConstraint(Constraint):
             return max_result
         
     def exact_true(self, values) -> bool:
+        """Returns whether the values given follow the constraint."""
         return MaxConstraint.F[self.constraint](self.labels, values)
         
     def is_vnnlib(self, coerce=False) -> bool:
-        pass
+        """Returns whether the constraint is immediately representable in VNNLIB format.
+        All of max, min, notmax, and notmin are allowed in VNNLIB. Therefore,
+            MaxConstraint.is_vnnlib() will always return True.
+        """
+        return True
 
     def force_vnnlib(self) -> Constraint:
-        pass
+        """Return this constraint in VNNLIB format.
+        All of max, min, notmax, and notmin are allowed in VNNLIB. Therefore,
+            MaxConstraint.force_vnnlib() will never change the constraint.
+        """
+        return self
+Constraint.VALID_CONSTRAINTS = tuple(*ComparisonConstraints.VALID_CONSTRAINTS, *MaxConstraints.VALID_CONSTRAINTS)
 
 class Constraints:
     @classmethod
@@ -365,7 +376,7 @@ class Constraints:
             parts = line.split(" ")
             labels = []
             i = 0
-            while parts[i] not in Constraint.INVERT_MAP:
+            while parts[i] not in Constraint.VALID_CONSTRAINTS:
                 labels.append(parts[i])
                 i += 1
             if len(parts) == i + 1: # constraint is last element
@@ -412,23 +423,36 @@ class Constraints:
     def __repr__(self):
         return '\n'.join(map(repr, self.constraints))
 
-    def __call__(self, values, upper_bound=None, min_percent=None):
-        if upper_bound is None:
-            for constraint in self.constraints:
-                if not constraint(values):
-                    return False
-            return True
-        elif len(self.constraints) == 0:
+    def percent_true(self, lower_bound, upper_bound):
+        if len(self.constraints) == 0:
             return 1
-        elif min_percent is not None:
-            for constraint in self.constraints:
-                if not constraint(values, upper_bound, min_percent=min_percent):
-                    return False
-            return True
+        result = 1
+        for constraint in self.constraints:
+            # Rough estimate for an AND operation.
+            # TODO: Actually run a true AND
+            result *= constraint.percent_true(lower_bound, upper_bound)
+            if result <= 0:
+                return 0
+        return result
+
+    def exact_true(self, values):
+        for constraint in self.constraints:
+            if not constraint(values):
+                return False
+        return True
+
+    def __call__(self, values_or_lower_bound, upper_bound=None, min_percent=None):
+        if upper_bound is None:
+            if min_percent is not None:
+                raise TypeError("TypeError: __call__() got an unexpected keyword argument 'min_percent'")
+            values = values_or_lower_bound
+            # __call__(self, values)
+            return self.exact_true(values)
         else:
-            total = 0
-            for constraint in self.constraints:
-                total += constraint.percent_true(values, upper_bound)
-            else:
-                return total / len(self.constraints)
+            lower_bound = values_or_lower_bound
+            # __call__(self, lower_bound, upper_bound, min_percent=None)
+            percent = self.percent_true(lower_bound, upper_bound)
+            if min_percent is None:
+                return percent
+            return percent >= min_percent
 
