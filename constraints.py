@@ -1,8 +1,50 @@
-from typing import Tuple, Literal, NewType
+from typing import Tuple
 import numpy as np
 
-Label = NewType(int)
-Constant = NewType(float)
+class Label(int):
+    def __new__(cls, v):
+        if type(v) is str:
+            if not v.startswith("y"):
+                raise ValueError(f"Invalid label index {v}; label indices must start with 'y' (e.g. y4)")
+            try:
+                return super(Label, cls).__new__(cls, v[1:])
+            except ValueError:
+                raise ValueError(f"Invalid label index {v}")
+        elif issubclass(type(v), int):
+            return super(Label, cls).__new__(cls, v)
+        else:
+            raise TypeError(f"Invalid label index {v} of type {type(v).__name__}; expecting int or str")
+class Constant(float):
+    def __new__(cls, v):
+        if type(v) is str:
+            if not v.endswith("f"):
+                raise ValueError(f"Invalid constant {v}; constants must end in 'f' (e.g. 8f or -2.24e8f)")
+            try:
+                return super(Constant, cls).__new__(cls, v[:-1])
+            except ValueError:
+                raise ValueError(f"Invalid constant {v}")
+        elif issubclass(type(v), float):
+            return super(Constant, cls).__new__(cls, v)
+        else:
+            raise TypeError(f"Invalid constant {v} of type {type(v).__name__}; expecting float or str")
+def LabelOrConstant(v):
+    t = type(v)
+    if issubclass(t, int):
+        return Label(v)
+    elif issubclass(t, float):
+        return Constant(v)
+    elif t is str:
+        try:
+            return Label(v)
+        except ValueError:
+            pass
+        try:
+            return Constant(v)
+        except ValueError:
+            pass
+        raise ValueError(f"Invalid constant or label index {v}; constants must end with 'f' (e.g. 8f or -2.24e8f); label indices must start with 'y' (e.g. y4)")
+    else:
+        raise TypeError(f"Invalid constant or label index {v} of type {type(v).__name__}; expecting int, float, or str")
 
 class Constraint:
     VALID_CONSTRAINTS = () # Initialized later
@@ -11,15 +53,15 @@ class Constraint:
         """Creation of a Constraint will be delegated to a subclass"""
         if cls is Constraint:
             if constraint in ComparisonConstraint.VALID_CONSTRAINTS:
-                return super(Constraint, cls).__new__(ComparisonConstraint, labels, constraint, *args, **kwargs)
+                return super(Constraint, cls).__new__(ComparisonConstraint)
             elif constraint in MaxConstraint.VALID_CONSTRAINTS:
-                return super(Constraint, cls).__new__(ComparisonConstraint, labels, constraint, *args, **kwargs)
+                return super(Constraint, cls).__new__(MaxConstraint)
             else:
                 raise ValueError(f"Bad constraint `{constraint}`")
         else:
-            return super(Constraint, cls).__new__(cls, labels, constraint, *args, **kwargs)
+            return super(Constraint, cls).__new__(cls)
 
-    def __invert__(self) -> Constraint:
+    def __invert__(self) -> 'Constraint':
         """Inverts the constraint.
         Calls to `inverted.percent_true(...)` will always return `1 - self.percent_true(...)`
         Calls to `inverted.exact_true(...)` will always return `not self.exact_true(...)`
@@ -45,7 +87,7 @@ class Constraint:
         """Returns whether the constraint is immediately representable in VNNLIB format."""
         raise NotImplementedError(f"Constraint type {type(self)} did not implement is_vnnlib(self, coerce=False) -> bool")
 
-    def force_vnnlib(self) -> Constraint:
+    def force_vnnlib(self) -> 'Constraint':
         """Return this constraint in VNNLIB format.
         *WARNING - This may change equality inclusion (e.g. >= to >, or < to <=)!
 
@@ -69,34 +111,6 @@ class Constraint:
             if min_percent is None:
                 return percent
             return percent >= min_percent
-
-    def get_label(self, v) -> Label:
-        if type(v) is Label:
-            return v
-        elif not v.startswith("y"):
-            raise ValueError(f"Invalid label index {v}; label indices must start with 'y' (e.g. y4)")
-        try:
-            return Label(v[1:])
-        except ValueError:
-            raise ValueError(f"Invalid label index {v}")
-            
-    def get_constant(self, v) -> Constant:
-        if type(v) is Constant:
-            return v
-        elif not v.endswith("f"):
-            raise ValueError(f"Invalid constant {v}; constants must end with 'f' (e.g. 8f or -2.24e8f)")
-        try:
-            return Constant(v[:-1])
-        except ValueError:
-            raise ValueError(f"Invalid label index {v}")
-            
-    def get_label_or_constant(self, v) -> Label | Constant:
-        if v.startswith("y") or type(v) is Label:
-            return self.get_label(v)
-        elif v.endswith("f") or type(v) is Constant:
-            return self.get_constant(v)
-        else:
-            raise ValueError(f"Invalid constant or label index {v}; constants must end with 'f' (e.g. 8f or -2.24e8f); label indices must start with 'y' (e.g. y4)")
 
 class ComparisonConstraint(Constraint):
     VALID_CONSTRAINTS = ('>', '>=', '<', '<=')
@@ -125,9 +139,9 @@ class ComparisonConstraint(Constraint):
                 if type(label) is not str:
                     raise TypeError(f"iterable[0]: Expected a str, got {type(label).__name__}")
 
-        self.label = self.get_label(label)
+        self.label = Label(label)
         self.constraint = constraint
-        self.other = self.get_label_or_constant(other)
+        self.other = LabelOrConstant(other)
 
         self.other_const = type(other) is Constant
 
@@ -250,18 +264,18 @@ class MaxConstraint(Constraint):
         'notmax': 'max',
         'notmin': 'min',
     }
+    # Not @staticmethod because we don't need to access this outside of the static context
+    def _F(func, invert=False):
+        if invert:
+            return lambda labels, values: func(values) not in labels
+        else:
+            return lambda labels, values: func(values) in labels
     F = {
         'max': _F(np.argmax),
         'min': _F(np.argmin),
         'notmax': _F(np.argmax, True),
         'notmin': _F(np.argmin, True),
     }
-    @staticmethod
-    def _F(func, invert=False):
-        if invert:
-            return lambda labels, values: func(values) not in labels
-        else:
-            return lambda labels, values: func(values) in labels
     
     def __init__(self, labels, constraint):
         if constraint not in MaxConstraint.VALID_CONSTRAINTS:
@@ -271,7 +285,8 @@ class MaxConstraint(Constraint):
 
         self.labels = []
         for label in labels:
-            self.labels.append(self.get_label(label))
+            self.labels.append(Label(label))
+        self.constraint = constraint
 
     def __invert__(self) -> Constraint:
         """Inverts the constraint.
@@ -358,7 +373,7 @@ class MaxConstraint(Constraint):
             MaxConstraint.force_vnnlib() will never change the constraint.
         """
         return self
-Constraint.VALID_CONSTRAINTS = tuple(*ComparisonConstraints.VALID_CONSTRAINTS, *MaxConstraints.VALID_CONSTRAINTS)
+Constraint.VALID_CONSTRAINTS = (*ComparisonConstraint.VALID_CONSTRAINTS, *MaxConstraint.VALID_CONSTRAINTS)
 
 class Constraints:
     @classmethod
