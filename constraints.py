@@ -171,9 +171,9 @@ class ComparisonConstraint(Constraint):
         All constants are represented by Nf, where N is any float value.
         """
         if self.other_const:
-            return f"y{self.label} {constraint} {self.other}f"
+            return f"y{self.label} {self.constraint} {self.other}f"
         else:
-            return f"y{self.label} {constraint} y{self.other}"
+            return f"y{self.label} {self.constraint} y{self.other}"
 
     def percent_true(self, lower_bound, upper_bound) -> float:
         """Returns the percentage of values between lower_bound and upper_bound that follow the constraint."""
