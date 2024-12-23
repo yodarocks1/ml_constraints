@@ -7,13 +7,17 @@ class Label(int):
             if not v.startswith("y"):
                 raise ValueError(f"Invalid label index {v}; label indices must start with 'y' (e.g. y4)")
             try:
-                return super(Label, cls).__new__(cls, v[1:])
+                result = super(Label, cls).__new__(cls, v[1:])
             except ValueError:
                 raise ValueError(f"Invalid label index {v}")
         elif issubclass(type(v), int):
-            return super(Label, cls).__new__(cls, v)
+            result = super(Label, cls).__new__(cls, v)
         else:
             raise TypeError(f"Invalid label index {v} of type {type(v).__name__}; expecting int or str")
+
+        if result < 0:
+            raise ValueError(f"Invalid label index {v}; label indices must be non-negative")
+        return result
 class Constant(float):
     def __new__(cls, v):
         if type(v) is str:
@@ -23,10 +27,10 @@ class Constant(float):
                 return super(Constant, cls).__new__(cls, v[:-1])
             except ValueError:
                 raise ValueError(f"Invalid constant {v}")
-        elif issubclass(type(v), float):
+        elif issubclass(type(v), float) or (issubclass(type(v), int) and not isinstance(v, Label)):
             return super(Constant, cls).__new__(cls, v)
         else:
-            raise TypeError(f"Invalid constant {v} of type {type(v).__name__}; expecting float or str")
+            raise TypeError(f"Invalid constant {v} of type {type(v).__name__}; expecting int, float, or str")
 def LabelOrConstant(v):
     t = type(v)
     if issubclass(t, int):
