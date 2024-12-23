@@ -119,3 +119,5 @@ class TestClasses(unittest.TestCase):
                 with self.assertRaises(error, msg=msg):
                     label_or_constant = LabelOrConstant(input_)
 
+if __name__ == '__main__':
+    unittest.main()
