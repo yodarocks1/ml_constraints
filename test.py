@@ -1,5 +1,5 @@
 import unittest
-from constraints import Label, Constant, LabelOrConstant
+from ml_constraints.constraints import Label, Constant, LabelOrConstant
 
 # TODO: Add support for 1e8, and 0xa14
 GOOD_LABELS = (

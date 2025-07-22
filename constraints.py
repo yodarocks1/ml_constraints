@@ -1,4 +1,3 @@
-from typing import Tuple
 import numpy as np
 
 class Label(int):
@@ -12,6 +11,8 @@ class Label(int):
                 raise ValueError(f"Invalid label index {v}")
         elif issubclass(type(v), int):
             result = super(Label, cls).__new__(cls, v)
+        elif hasattr(v, "dtype") and np.issubdtype(v.dtype, np.integer) and hasattr(v, "item"):
+            result = super(Label, cls).__new__(cls, v.item())
         else:
             raise TypeError(f"Invalid label index {v} of type {type(v).__name__}; expecting int or str")
 
@@ -29,6 +30,8 @@ class Constant(float):
                 raise ValueError(f"Invalid constant {v}")
         elif issubclass(type(v), float) or (issubclass(type(v), int) and not isinstance(v, Label)):
             return super(Constant, cls).__new__(cls, v)
+        elif hasattr(v, "dtype") and np.issubdtype(v.dtype, np.floating) and hasattr(v, "item"):
+            return super(Constant, cls).__new__(cls, v.item())
         else:
             raise TypeError(f"Invalid constant {v} of type {type(v).__name__}; expecting int, float, or str")
 def LabelOrConstant(v):
@@ -133,9 +136,9 @@ class ComparisonConstraint(Constraint):
     def __init__(self, label, constraint, other):
         if constraint not in ComparisonConstraint.VALID_CONSTRAINTS:
             raise ValueError(f"Bad constraint `{constraint}`")
-        elif other is None or type(other) is not str:
+        elif other is None or type(other) not in (str, Label, Constant):
             raise ValueError(f"Comparison constraints (like `{constraint}`) require a label or value on the right")
-        elif type(label) is not str:
+        elif type(label) not in (str, Label):
             if len(label) != 1:
                 raise TypeError(f"Expected an iterable of length 1, got {type(label).__name__} of length {len(label)}")
             else:
@@ -161,7 +164,7 @@ class ComparisonConstraint(Constraint):
         """
         inverted_constraint = ComparisonConstraint.INVERT_MAP[self.constraint]
         if self.other_const:
-            return ComparisonConstraint(self.label, inverted_constraint, self.other + "f")
+            return ComparisonConstraint(self.label, inverted_constraint, str(self.other) + "f")
         else:
             return ComparisonConstraint(self.label, inverted_constraint, self.other)
     
@@ -177,8 +180,8 @@ class ComparisonConstraint(Constraint):
 
     def percent_true(self, lower_bound, upper_bound) -> float:
         """Returns the percentage of values between lower_bound and upper_bound that follow the constraint."""
-        v1_low = lower_bound[self.labels[0]]
-        v1_high = upper_bound[self.labels[0]]
+        v1_low = lower_bound[self.label]
+        v1_high = upper_bound[self.label]
         if not self.other_const:
             v2_low = lower_bound[self.other]
             v2_high = upper_bound[self.other]
@@ -206,7 +209,7 @@ class ComparisonConstraint(Constraint):
             
     def exact_true(self, values) -> bool:
         """Returns whether the values given follow the constraint."""
-        v1 = values[self.labels[0]]
+        v1 = values[self.label]
         v2 = self.other if self.other_const else values[self.other]
         return ComparisonConstraint.F[self.constraint](v1, v2)
 
@@ -397,6 +400,25 @@ class Constraints:
             else:
                 c.add(Constraint(labels, parts[i], parts[i+1]))
         return c
+    @classmethod
+    def from_object(cls, obj):
+        cls2 = type(obj)
+        is_valid = True
+        for key in dir(cls):
+            if hasattr(cls2, key):
+                v1 = getattr(cls, key)
+                v2 = getattr(cls2, key)
+                if type(v1) != type(v2):
+                    is_valid = False
+        if is_valid and not hasattr(obj, "constraints"):
+            is_valid = False
+        elif is_valid and not type(obj.constraints) == list:
+            is_valid = False
+        #elif is_valid and len(obj.constraints) > 0 and not type(obj.constraints[0]) 
+        # Assume, at this point ^ that obj is a Constraints object.
+        if not is_valid:
+            raise ValueError(f"Passed constraint object (class \"{cls2.__name__}\") does not fit the structure for type Constraints")
+        return obj
     @classmethod
     def from_constraint_file(cls, file):
         with open(file, 'r') as f:
