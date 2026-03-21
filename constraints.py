@@ -1,4 +1,5 @@
 import numpy as np
+import re
 
 class Label(int):
     def __new__(cls, v):
@@ -94,6 +95,34 @@ class Constraint:
         """Returns whether the constraint is immediately representable in VNNLIB format."""
         raise NotImplementedError(f"Constraint type {type(self)} did not implement is_vnnlib(self, coerce=False) -> bool")
 
+    def __and__(self, other) -> 'Constraint':
+        if not issubclass(type(other), Constraint):
+            raise TypeError("Constraints can only be ANDed with other Constraints")
+        return AndConstraint(self, other)
+    
+    def __or__(self, other) -> 'Constraint':
+        if not issubclass(type(other), Constraint):
+            raise TypeError("Constraints can only be ORed with other Constraints")
+        return OrConstraint(self, other)
+    
+    def __mul__(self, other) -> 'Constraint':
+        return self.__and__(other)
+
+    def __add__(self, other) -> 'Constraint':
+        return self.__or__(other)
+
+    def __sub__(self, other) -> 'Constraint':
+        return self.__or__(~other)
+
+    def __neg__(self) -> 'Constraint':
+        return self.__invert__()
+
+    def __pos__(self) -> 'Constraint':
+        return self
+
+    def __len__(self) -> int:
+        return 1
+
     def force_vnnlib(self) -> 'Constraint':
         """Return this constraint in VNNLIB format.
         *WARNING - This may change equality inclusion (e.g. >= to >, or < to <=)!
@@ -136,21 +165,19 @@ class ComparisonConstraint(Constraint):
     def __init__(self, label, constraint, other):
         if constraint not in ComparisonConstraint.VALID_CONSTRAINTS:
             raise ValueError(f"Bad constraint `{constraint}`")
-        elif other is None or type(other) not in (str, Label, Constant):
+        elif other is None:
             raise ValueError(f"Comparison constraints (like `{constraint}`) require a label or value on the right")
-        elif type(label) not in (str, Label):
+        elif type(label) in (list, tuple):
             if len(label) != 1:
                 raise TypeError(f"Expected an iterable of length 1, got {type(label).__name__} of length {len(label)}")
             else:
                 label = label[0]
-                if type(label) is not str:
-                    raise TypeError(f"iterable[0]: Expected a str, got {type(label).__name__}")
 
         self.label = Label(label)
         self.constraint = constraint
         self.other = LabelOrConstant(other)
 
-        self.other_const = type(other) is Constant
+        self.other_const = type(self.other) is Constant
 
         self.vnnlib = (self.other_const and constraint == ">=") or (not self.other_const and constraint in [">", "<"])
 
@@ -382,83 +409,43 @@ class MaxConstraint(Constraint):
         return self
 Constraint.VALID_CONSTRAINTS = (*ComparisonConstraint.VALID_CONSTRAINTS, *MaxConstraint.VALID_CONSTRAINTS)
 
-class Constraints:
-    @classmethod
-    def from_text(cls, text):
-        c = cls()
-        if type(text) is str:
-            text = text.split("\n")
-        for line in text:
-            parts = line.split(" ")
-            labels = []
-            i = 0
-            while parts[i] not in Constraint.VALID_CONSTRAINTS:
-                labels.append(parts[i])
-                i += 1
-            if len(parts) == i + 1: # constraint is last element
-                c.add(Constraint(labels, parts[i]))
-            else:
-                c.add(Constraint(labels, parts[i], parts[i+1]))
-        return c
-    @classmethod
-    def from_object(cls, obj):
-        cls2 = type(obj)
-        is_valid = True
-        for key in dir(cls):
-            if hasattr(cls2, key):
-                v1 = getattr(cls, key)
-                v2 = getattr(cls2, key)
-                if type(v1) != type(v2):
-                    is_valid = False
-        if is_valid and not hasattr(obj, "constraints"):
-            is_valid = False
-        elif is_valid and not type(obj.constraints) == list:
-            is_valid = False
-        #elif is_valid and len(obj.constraints) > 0 and not type(obj.constraints[0]) 
-        # Assume, at this point ^ that obj is a Constraints object.
-        if not is_valid:
-            raise ValueError(f"Passed constraint object (class \"{cls2.__name__}\") does not fit the structure for type Constraints")
-        return obj
-    @classmethod
-    def from_constraint_file(cls, file):
-        with open(file, 'r') as f:
-            lines = f.readlines()
-        return cls.from_text(lines)
-    @classmethod
-    def from_label(cls, label):
-        c = cls()
-        c.add(Constraint((label, ), "max"))
-        return c
+class AndConstraint(Constraint):
+    def __init__(self, *constraints):
+        if len(constraints) == 0:
+            raise ValueError("An AndConstraint must have at least one constraint")
+        self.constraints = constraints
 
+    def __invert__(self) -> Constraint:
+        """Inverts the constraint.
+        Calls to `inverted.percent_true(...)` will always return `1 - self.percent_true(...)`
+        Calls to `inverted.exact_true(...)` will always return `not self.exact_true(...)`
 
-    def __init__(self):
-        self.constraints = []
+        This is done by returning an OrConstraint that is the proper inverse of this one.
+          E.g. `~(a AND b) => ~a OR ~b`
+        """
+        return OrConstraint(*map(lambda c: ~c, constraints))
 
-    def add(self, *constraints):
-        self.constraints.extend(constraints)
+    def __and__(self, other) -> Constraint:
+        if type(other) is AndConstraint:
+            return AndConstraint(*self.constraints, *other.constraints)
+        return AndConstraint(*self.constraints, other)
+    
+    def __repr__(self) -> str:
+        """Returns the constraint in proper constraints-file format.
+        All labels are represented by yN, where N is their index.
+        All constants are represented by Nf, where N is any float value.
+        """
+        if len(self.constraints) == 1:
+            return repr(self.constraints[0])
+        raise NotImplementedError("And constraints don't yet have a proper constraints-file representation")
 
-    def is_vnnlib(self, force=False):
+    def __len__(self) -> int:
+        l = 0
         for constraint in self.constraints:
-            if not constraint.is_vnnlib(force=force):
-                return False
-        return True
+            l += len(constraint)
+        return l
 
-    def force_vnnlib(self):
-        c = Constraints()
-        for constraint in self.constraints:
-            c.add(constraint.force_vnnlib())
-        return c
-
-    def __invert__(self):
-        c = Constraints()
-        for constraint in self.constraints:
-            c.add(~constraint)
-        return c
-
-    def __repr__(self):
-        return '\n'.join(map(repr, self.constraints))
-
-    def percent_true(self, lower_bound, upper_bound):
+    def percent_true(self, lower_bound, upper_bound) -> float:
         if len(self.constraints) == 0:
             return 1
         result = 1
@@ -469,25 +456,222 @@ class Constraints:
             if result <= 0:
                 return 0
         return result
-
-    def exact_true(self, values):
+        
+    def exact_true(self, values) -> bool:
+        """Returns whether the values given follow the constraint."""
         for constraint in self.constraints:
             if not constraint(values):
                 return False
         return True
+        
+    def is_vnnlib(self, coerce=False) -> bool:
+        """Returns whether the constraint is immediately representable in VNNLIB format."""
+        for constraint in self.constraints:
+            if not constraint.is_vnnlib(coerce=coerce):
+                return False
+        return True
 
-    def __call__(self, values_or_lower_bound, upper_bound=None, min_percent=None):
-        if upper_bound is None:
-            if min_percent is not None:
-                raise TypeError("TypeError: __call__() got an unexpected keyword argument 'min_percent'")
-            values = values_or_lower_bound
-            # __call__(self, values)
-            return self.exact_true(values)
+    def force_vnnlib(self) -> Constraint:
+        """Return this constraint in VNNLIB format."""
+        return AndConstraint(*map(lambda c: c.force_vnnlib(), self.constraints))
+
+class OrConstraint(Constraint):
+    def __init__(self, *constraints):
+        if len(constraints) == 0:
+            raise ValueError("An OrConstraint must have at least one constraint")
+        self.constraints = constraints
+
+    def __invert__(self) -> Constraint:
+        """Inverts the constraint.
+        Calls to `inverted.percent_true(...)` will always return `1 - self.percent_true(...)`
+        Calls to `inverted.exact_true(...)` will always return `not self.exact_true(...)`
+
+        This is done by returning an OrConstraint that is the proper inverse of this one.
+          E.g. `~(a OR b) => ~a AND ~b`
+        """
+        return AndConstraint(*map(lambda c: ~c, constraints))
+
+    def __or__(self, other) -> Constraint:
+        if type(other) is OrConstraint:
+            return OrConstraint(*self.constraints, *other.constraints)
+        return OrConstraint(*self.constraints, other)
+    
+    def __repr__(self) -> str:
+        """Returns the constraint in proper constraints-file format.
+        All labels are represented by yN, where N is their index.
+        All constants are represented by Nf, where N is any float value.
+        """
+        if len(self.constraints) == 1:
+            return repr(self.constraints[0])
+        raise NotImplementedError("Or constraints don't yet have a proper constraints-file representation")
+
+    def __len__(self) -> int:
+        l = 0
+        for constraint in self.constraints:
+            l += len(constraint)
+        return l
+
+    def percent_true(self, lower_bound, upper_bound) -> float:
+        if len(self.constraints) == 0:
+            return 1
+        area_failed = 1
+        for constraint in self.constraints:
+            # Rough estimate for an OR operation.
+            # TODO: Actually run a true OR
+            area_failed *= 1 - constraint.percent_true(lower_bound, upper_bound)
+            if area_failed <= 0:
+                return 1
+        return 1 - area_failed
+        
+    def exact_true(self, values) -> bool:
+        """Returns whether the values given follow the constraint."""
+        for constraint in self.constraints:
+            if constraint(values):
+                return True
+        return False
+        
+    def is_vnnlib(self, coerce=False) -> bool:
+        """Returns whether the constraint is immediately representable in VNNLIB format."""
+        for constraint in self.constraints:
+            if not constraint.is_vnnlib(coerce=coerce):
+                return False
+        return True
+
+    def force_vnnlib(self) -> Constraint:
+        """Return this constraint in VNNLIB format."""
+        return OrConstraint(*map(lambda c: c.force_vnnlib(), self.constraints))
+
+class Constraints:
+    @staticmethod
+    def from_text(text):
+        text = re.sub("\s+\n\s+", "\n", text).strip()
+        if "\n" in text:
+            parts = []
+            i = 0
+            for line in text.split("\n"):
+                parts.append(cls._from_line(line, [i]))
+                i += 1
+            return AndConstraint(*parts)
         else:
-            lower_bound = values_or_lower_bound
-            # __call__(self, lower_bound, upper_bound, min_percent=None)
-            percent = self.percent_true(lower_bound, upper_bound)
-            if min_percent is None:
-                return percent
-            return percent >= min_percent
+            return Constraints._from_line(text, [0])
+    @staticmethod
+    def _from_line(text, idx=[]):
+        if "\n" in text:
+            return Constraints.from_text(text)
+        text = re.sub("[ \t]+", " ", text).strip()
+        text = re.sub("(AND|[&]+)", "&", text)
+        text = re.sub("(OR|[|]+)", "|", text)
+        return Constraints.from_parts(Constraints._split_parentheses(text), idx=idx)
+    @staticmethod
+    def _from_parts(parts, idx=[]):
+        built = None
+        op = None
+        before_constraint = []
+        constraint = None
+        after_constraint = []
+        i = 0
+        def build():
+            if constraint is None and len(before_constraint) == 0:
+                raise ValueError("Missing text in a constraint @ " + ":".join([*idx, i]))
+            elif constraint is None:
+                raise ValueError("Missing a valid op in a constraint @ " + ":".join([*idx, i]))
+            elif len(before_constraint) == 0:
+                raise ValueError("Missing text before a constraint op @ " + ":".join([*idx, i]))
+            newBuild = Constraint(before_constraint, constraint, *after_constraint)
+            if built is None:
+                built = newBuild
+            elif op is not None:
+                built = op(built, newBuild)
+            else:
+                raise ValueError("Missing an AND/OR operator between constraints @ " + ":".join([*idx, i]))
+            op = None
+            before_constraint = []
+            constraint = None
+            after_constraint = []
+        while i < len(parts):
+            if type(parts[i]) is list:
+                newBuild = Constraints._from_parts(parts[i], [*idx, i])
+                if built is None:
+                    built = newBuild
+                elif op is not None:
+                    built = op(built, newBuild)
+                else:
+                    raise ValueError("Missing an AND/OR operator between constraints @ " + ":".join([*idx, i]))
+                op = None
+            elif parts[i] in Constraint.VALID_CONSTRAINTS:
+                constraint = parts[i]
+            elif parts[i] in ["&", "|"]:
+                build()
+                op = parts[i]
+            elif constraint is None:
+                before_constraint.append(parts[i])
+            else:
+                after_constraint.append(parts[i])
+        if constraint is not None or len(before_constraint) > 0:
+            build()
+        return built
+    @staticmethod
+    def _split_parentheses(t):
+        level = 0
+        start = 0
+        parts = []
+        for i in range(len(t)):
+            if t[i] == " " and level == 0:
+                parts.append(t[start:i])
+                start = i + 1
+            elif t[i] == "(":
+                level += 1
+            elif t[i] == ")":
+                level -= 1
+        parts.append(t[start:])
+        result = []
+        for part in parts:
+            if part.startswith("(") and part.endswith(")"):
+                result.append(Constraints._split_parentheses(part[1:-1]))
+            else:
+                result.append(part)
+        return result
+    @staticmethod
+    def from_constraint_file(file):
+        with open(file, 'r') as f:
+            lines = f.readlines()
+        return Constraints.from_text(lines)
+    @staticmethod
+    def from_label(label):
+        return Constraint((label, ), "max")
+
+#    @classmethod
+#    def from_object(cls, obj):
+#        cls2 = type(obj)
+#        is_valid = True
+#        for key in dir(cls):
+#            if hasattr(cls2, key):
+#                v1 = getattr(cls, key)
+#                v2 = getattr(cls2, key)
+#                if type(v1) != type(v2):
+#                    is_valid = False
+#        if is_valid and not hasattr(obj, "constraints"):
+#            is_valid = False
+#        elif is_valid and not type(obj.constraints) == list:
+#            is_valid = False
+#        #elif is_valid and len(obj.constraints) > 0 and not type(obj.constraints[0]) 
+#        # Assume, at this point ^ that obj is a Constraints object.
+#        if not is_valid:
+#            raise ValueError(f"Passed constraint object (class \"{cls2.__name__}\") does not fit the structure for type Constraints")
+#        return obj
+
+#    def __call__(self, values_or_lower_bound, upper_bound=None, min_percent=None):
+#        if upper_bound is None:
+#            if min_percent is not None:
+#                raise TypeError("TypeError: __call__() got an unexpected keyword argument 'min_percent'")
+#            values = values_or_lower_bound
+#            # __call__(self, values)
+#            return self.exact_true(values)
+#        else:
+#            lower_bound = values_or_lower_bound
+#            # __call__(self, lower_bound, upper_bound, min_percent=None)
+#            percent = self.percent_true(lower_bound, upper_bound)
+#            if min_percent is None:
+#                return percent
+#            return percent >= min_percent
 
