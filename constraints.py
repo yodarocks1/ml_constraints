@@ -69,6 +69,139 @@ class Constraint:
         else:
             return super(Constraint, cls).__new__(cls)
 
+    @staticmethod
+    def from_text(text):
+        text = re.sub("\s+\n\s+", "\n", text).strip()
+        if "\n" in text:
+            parts = []
+            i = 0
+            for line in text.split("\n"):
+                parts.append(Constraint._from_line(line, [i]))
+                i += 1
+            return AndConstraint(*parts)
+        else:
+            return Constraint._from_line(text, [0])
+    @staticmethod
+    def _from_line(text, idx=[]):
+        if "\n" in text:
+            return Constraint.from_text(text)
+        text = re.sub("[ \t]+", " ", text).strip()
+        text = re.sub("(AND|[&]+)", "&", text)
+        text = re.sub("(OR|[|]+)", "|", text)
+        return Constraint.from_parts(Constraint._split_parentheses(text), idx=idx)
+    @staticmethod
+    def _from_parts(parts, idx=[]):
+        built = None
+        op = None
+        before_constraint = []
+        constraint = None
+        after_constraint = []
+        i = 0
+        def build():
+            if constraint is None and len(before_constraint) == 0:
+                raise ValueError("Missing text in a constraint @ " + ":".join([*idx, i]))
+            elif constraint is None:
+                raise ValueError("Missing a valid op in a constraint @ " + ":".join([*idx, i]))
+            elif len(before_constraint) == 0:
+                raise ValueError("Missing text before a constraint op @ " + ":".join([*idx, i]))
+            newBuild = Constraint(before_constraint, constraint, *after_constraint)
+            if built is None:
+                built = newBuild
+            elif op is not None:
+                built = op(built, newBuild)
+            else:
+                raise ValueError("Missing an AND/OR operator between constraints @ " + ":".join([*idx, i]))
+            op = None
+            before_constraint = []
+            constraint = None
+            after_constraint = []
+        while i < len(parts):
+            if type(parts[i]) is list:
+                newBuild = Constraint._from_parts(parts[i], [*idx, i])
+                if built is None:
+                    built = newBuild
+                elif op is not None:
+                    built = op(built, newBuild)
+                else:
+                    raise ValueError("Missing an AND/OR operator between constraints @ " + ":".join([*idx, i]))
+                op = None
+            elif parts[i] in Constraint.VALID_CONSTRAINTS:
+                constraint = parts[i]
+            elif parts[i] in ["&", "|"]:
+                build()
+                op = parts[i]
+            elif constraint is None:
+                before_constraint.append(parts[i])
+            else:
+                after_constraint.append(parts[i])
+        if constraint is not None or len(before_constraint) > 0:
+            build()
+        return built
+    @staticmethod
+    def _split_parentheses(t):
+        level = 0
+        start = 0
+        parts = []
+        for i in range(len(t)):
+            if t[i] == " " and level == 0:
+                parts.append(t[start:i])
+                start = i + 1
+            elif t[i] == "(":
+                level += 1
+            elif t[i] == ")":
+                level -= 1
+        parts.append(t[start:])
+        result = []
+        for part in parts:
+            if part.startswith("(") and part.endswith(")"):
+                result.append(Constraint._split_parentheses(part[1:-1]))
+            else:
+                result.append(part)
+        return result
+    @staticmethod
+    def from_constraint_file(file):
+        with open(file, 'r') as f:
+            lines = f.readlines()
+        return Constraint.from_text(lines)
+    @staticmethod
+    def from_label(label):
+        return Constraint((label, ), "max")
+
+#    @classmethod
+#    def from_object(cls, obj):
+#        cls2 = type(obj)
+#        is_valid = True
+#        for key in dir(cls):
+#            if hasattr(cls2, key):
+#                v1 = getattr(cls, key)
+#                v2 = getattr(cls2, key)
+#                if type(v1) != type(v2):
+#                    is_valid = False
+#        if is_valid and not hasattr(obj, "constraints"):
+#            is_valid = False
+#        elif is_valid and not type(obj.constraints) == list:
+#            is_valid = False
+#        #elif is_valid and len(obj.constraints) > 0 and not type(obj.constraints[0]) 
+#        # Assume, at this point ^ that obj is a Constraints object.
+#        if not is_valid:
+#            raise ValueError(f"Passed constraint object (class \"{cls2.__name__}\") does not fit the structure for type Constraints")
+#        return obj
+
+#    def __call__(self, values_or_lower_bound, upper_bound=None, min_percent=None):
+#        if upper_bound is None:
+#            if min_percent is not None:
+#                raise TypeError("TypeError: __call__() got an unexpected keyword argument 'min_percent'")
+#            values = values_or_lower_bound
+#            # __call__(self, values)
+#            return self.exact_true(values)
+#        else:
+#            lower_bound = values_or_lower_bound
+#            # __call__(self, lower_bound, upper_bound, min_percent=None)
+#            percent = self.percent_true(lower_bound, upper_bound)
+#            if min_percent is None:
+#                return percent
+#            return percent >= min_percent
+
     def __invert__(self) -> 'Constraint':
         """Inverts the constraint.
         Calls to `inverted.percent_true(...)` will always return `1 - self.percent_true(...)`
@@ -689,138 +822,4 @@ class OrConstraint(Constraint):
             return avg
         else:
             return list(points)
-
-class Constraints:
-    @staticmethod
-    def from_text(text):
-        text = re.sub("\s+\n\s+", "\n", text).strip()
-        if "\n" in text:
-            parts = []
-            i = 0
-            for line in text.split("\n"):
-                parts.append(cls._from_line(line, [i]))
-                i += 1
-            return AndConstraint(*parts)
-        else:
-            return Constraints._from_line(text, [0])
-    @staticmethod
-    def _from_line(text, idx=[]):
-        if "\n" in text:
-            return Constraints.from_text(text)
-        text = re.sub("[ \t]+", " ", text).strip()
-        text = re.sub("(AND|[&]+)", "&", text)
-        text = re.sub("(OR|[|]+)", "|", text)
-        return Constraints.from_parts(Constraints._split_parentheses(text), idx=idx)
-    @staticmethod
-    def _from_parts(parts, idx=[]):
-        built = None
-        op = None
-        before_constraint = []
-        constraint = None
-        after_constraint = []
-        i = 0
-        def build():
-            if constraint is None and len(before_constraint) == 0:
-                raise ValueError("Missing text in a constraint @ " + ":".join([*idx, i]))
-            elif constraint is None:
-                raise ValueError("Missing a valid op in a constraint @ " + ":".join([*idx, i]))
-            elif len(before_constraint) == 0:
-                raise ValueError("Missing text before a constraint op @ " + ":".join([*idx, i]))
-            newBuild = Constraint(before_constraint, constraint, *after_constraint)
-            if built is None:
-                built = newBuild
-            elif op is not None:
-                built = op(built, newBuild)
-            else:
-                raise ValueError("Missing an AND/OR operator between constraints @ " + ":".join([*idx, i]))
-            op = None
-            before_constraint = []
-            constraint = None
-            after_constraint = []
-        while i < len(parts):
-            if type(parts[i]) is list:
-                newBuild = Constraints._from_parts(parts[i], [*idx, i])
-                if built is None:
-                    built = newBuild
-                elif op is not None:
-                    built = op(built, newBuild)
-                else:
-                    raise ValueError("Missing an AND/OR operator between constraints @ " + ":".join([*idx, i]))
-                op = None
-            elif parts[i] in Constraint.VALID_CONSTRAINTS:
-                constraint = parts[i]
-            elif parts[i] in ["&", "|"]:
-                build()
-                op = parts[i]
-            elif constraint is None:
-                before_constraint.append(parts[i])
-            else:
-                after_constraint.append(parts[i])
-        if constraint is not None or len(before_constraint) > 0:
-            build()
-        return built
-    @staticmethod
-    def _split_parentheses(t):
-        level = 0
-        start = 0
-        parts = []
-        for i in range(len(t)):
-            if t[i] == " " and level == 0:
-                parts.append(t[start:i])
-                start = i + 1
-            elif t[i] == "(":
-                level += 1
-            elif t[i] == ")":
-                level -= 1
-        parts.append(t[start:])
-        result = []
-        for part in parts:
-            if part.startswith("(") and part.endswith(")"):
-                result.append(Constraints._split_parentheses(part[1:-1]))
-            else:
-                result.append(part)
-        return result
-    @staticmethod
-    def from_constraint_file(file):
-        with open(file, 'r') as f:
-            lines = f.readlines()
-        return Constraints.from_text(lines)
-    @staticmethod
-    def from_label(label):
-        return Constraint((label, ), "max")
-
-#    @classmethod
-#    def from_object(cls, obj):
-#        cls2 = type(obj)
-#        is_valid = True
-#        for key in dir(cls):
-#            if hasattr(cls2, key):
-#                v1 = getattr(cls, key)
-#                v2 = getattr(cls2, key)
-#                if type(v1) != type(v2):
-#                    is_valid = False
-#        if is_valid and not hasattr(obj, "constraints"):
-#            is_valid = False
-#        elif is_valid and not type(obj.constraints) == list:
-#            is_valid = False
-#        #elif is_valid and len(obj.constraints) > 0 and not type(obj.constraints[0]) 
-#        # Assume, at this point ^ that obj is a Constraints object.
-#        if not is_valid:
-#            raise ValueError(f"Passed constraint object (class \"{cls2.__name__}\") does not fit the structure for type Constraints")
-#        return obj
-
-#    def __call__(self, values_or_lower_bound, upper_bound=None, min_percent=None):
-#        if upper_bound is None:
-#            if min_percent is not None:
-#                raise TypeError("TypeError: __call__() got an unexpected keyword argument 'min_percent'")
-#            values = values_or_lower_bound
-#            # __call__(self, values)
-#            return self.exact_true(values)
-#        else:
-#            lower_bound = values_or_lower_bound
-#            # __call__(self, lower_bound, upper_bound, min_percent=None)
-#            percent = self.percent_true(lower_bound, upper_bound)
-#            if min_percent is None:
-#                return percent
-#            return percent >= min_percent
 
