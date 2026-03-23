@@ -148,6 +148,19 @@ class Constraint:
                 return percent
             return percent >= min_percent
 
+    def nearest_satisfactory_point(self, point):
+        """Returns the nearest point to the one given that *does* meet the constraint.
+        Useful for gradient-following with points that do not satisfy the constraint.
+        If a point already satisfies the constraint, it will be immediately returned.
+        """
+        raise NotImplementedError(f"Constraint type {type(self)} did not implement nearest_satisfactory_point(self, point)")
+
+    def get_optimal_points(self, ref_min, ref_max):
+        """Returns the point or points that most optimally satisfy the constraint.
+        Useful for gradient-following.
+        """
+        raise NotImplementedError(f"Constraint type {type(self)} did not implement get_optimal_points(self, ref_min, ref_max)")
+
 class ComparisonConstraint(Constraint):
     VALID_CONSTRAINTS = ('>', '>=', '<', '<=')
     INVERT_MAP = {
@@ -290,6 +303,37 @@ class ComparisonConstraint(Constraint):
             # VNNLIB does not allow <= or >= comparisons with indices
             return ComparisonConstraint(self.label, self.constraint.replace("=", ""), self.other)
 
+    def nearest_satisfactory_point(self, point):
+        """Returns the nearest point to the one given that *does* meet the constraint.
+        Useful for gradient-following with points that do not satisfy the constraint.
+        If a point already satisfies the constraint, it will be immediately returned.
+        """
+        v1 = point[self.label]
+        v2 = self.other if self.other_const else values[self.other]
+        matches = ComparisonConstraint.F[self.constraint](v1, v2)
+        if matches:
+            return point
+        else:
+            new_point = point.copy()
+            if "=" in self.constraint:
+                new_point[self.label] = v2
+            else:
+                sign = 1 if self.constraint == ">" else -1
+                new_point[self.label] = v2 + sign * (np.abs(v2 * 1e-5) + 1e-8)
+            return new_point
+
+    def get_optimal_points(self, ref_min, ref_max):
+        """Returns the point or points that most optimally satisfy the constraint.
+        Useful for gradient-following.
+        """
+        point = (ref_min + ref_max) / 2
+        goal_left = ref_max if ">" in self.constraint else ref_min
+
+        point[self.label] = goal_left[self.label]
+        if not self.other_const:
+            point[self.other] = ref_min[self.other] if ">" in self.constraint else ref_max[self.other]
+        return point
+
 class MaxConstraint(Constraint):
     VALID_CONSTRAINTS = ('max', 'min', 'notmax', 'notmin')
     INVERT_MAP = {
@@ -407,6 +451,44 @@ class MaxConstraint(Constraint):
             MaxConstraint.force_vnnlib() will never change the constraint.
         """
         return self
+
+    def nearest_satisfactory_point(self, point):
+        """Returns the nearest point to the one given that *does* meet the constraint.
+        Useful for gradient-following with points that do not satisfy the constraint.
+        If a point already satisfies the constraint, it will be immediately returned.
+        """
+        if self(point):
+            return point
+        elif self.constraint in ["max", "min"]:
+            value = point.max() if self.constraint == "max" else point.min()
+            new_point = point.copy()
+            for label in self.labels:
+                new_point[label] = value
+            return new_point
+        else:
+            order = point.argsort()
+            i = 0 if self.constraint == "notmin" else (order.size - 1)
+            sign = 1 if self.constraint == "notmax" else -1
+            extremum = point[order[i]]
+            change = []
+            new_point = point.copy()
+            while point[order[i]] == extremum:
+                if order[i] in self.labels:
+                    change.append(order[i])
+                i += sign
+            for label in change:
+                new_point[label] = extremum + sign * (np.abs(low * 1e-5) + 1e-8)
+            return new_point
+
+    def get_optimal_points(self, ref_min, ref_max):
+        """Returns the point or points that most optimally satisfy the constraint.
+        Useful for gradient-following.
+        """
+        point = (ref_min + ref_max) / 2
+        new_value = ref_min if self.constraint in ["min", "notmax"] else ref_max
+        for label in self.labels:
+            point[label] = new_value
+        return point
 Constraint.VALID_CONSTRAINTS = (*ComparisonConstraint.VALID_CONSTRAINTS, *MaxConstraint.VALID_CONSTRAINTS)
 
 class AndConstraint(Constraint):
@@ -475,6 +557,41 @@ class AndConstraint(Constraint):
         """Return this constraint in VNNLIB format."""
         return AndConstraint(*map(lambda c: c.force_vnnlib(), self.constraints))
 
+    def nearest_satisfactory_point(self, point):
+        """Returns the nearest point to the one given that *does* meet the constraint.
+        Useful for gradient-following with points that do not satisfy the constraint.
+        If a point already satisfies the constraint, it will be immediately returned.
+        """
+        # TODO: Implement properly
+        if self(point):
+            return point
+        new_point = point.copy()
+        i = 0
+        while not self(new_point) and i < 3:
+            for constraint in self.constraints:
+                new_point = constraint.nearest_satisfactory_point(new_point)
+        if self(new_point):
+            return new_point
+        else:
+            raise NotImplementedError("We tried the simple way... and it didn't work. AndConstraint currently does not manually implement nearest_satisfactory_point(self, point)")
+
+    def get_optimal_points(self, ref_min, ref_max):
+        """Returns the point or points that most optimally satisfy the constraint.
+        Useful for gradient-following.
+        """
+        # TODO: Implement properly
+        points = []
+        for point in map(lambda c: c.get_optimal_points(ref_min, ref_max), self.constraints):
+            if type(point) is list:
+                points.extend(map(lambda p: self.nearest_satisfactory_point(p), point))
+            else:
+                points.append(self.nearest_satisfactory_point(point))
+        avg = np.average(points, axis=0)
+        if self(avg):
+            return avg
+        else:
+            return list(points)
+
 class OrConstraint(Constraint):
     def __init__(self, *constraints):
         if len(constraints) == 0:
@@ -540,6 +657,38 @@ class OrConstraint(Constraint):
     def force_vnnlib(self) -> Constraint:
         """Return this constraint in VNNLIB format."""
         return OrConstraint(*map(lambda c: c.force_vnnlib(), self.constraints))
+
+    def nearest_satisfactory_point(self, point):
+        """Returns the nearest point to the one given that *does* meet the constraint.
+        Useful for gradient-following with points that do not satisfy the constraint.
+        If a point already satisfies the constraint, it will be immediately returned.
+        """
+        if self(point):
+            return point
+        points = sorted(
+            map(lambda c: c.nearest_satisfactory_point(point), 
+                self.constraints
+            ),
+            key=lambda v: np.abs(point - v)
+        )
+        return points[0]
+
+    def get_optimal_points(self, ref_min, ref_max):
+        """Returns the point or points that most optimally satisfy the constraint.
+        Useful for gradient-following.
+        """
+        # TODO: Implement properly
+        points = []
+        for point in map(lambda c: c.get_optimal_points(ref_min, ref_max), self.constraints):
+            if type(point) is list:
+                points.extend(map(lambda p: self.nearest_satisfactory_point(p), point))
+            else:
+                points.append(self.nearest_satisfactory_point(point))
+        avg = np.average(points, axis=0)
+        if self(avg):
+            return avg
+        else:
+            return list(points)
 
 class Constraints:
     @staticmethod
